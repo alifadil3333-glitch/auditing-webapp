@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+sqlalchemy
+pymysql
+psycopg2-binary
+pyyaml
+python-dotenv
+sqlglot
+anthropic

@@ -1,0 +1,14 @@
+customers: customers
+customer_id: customerNumber
+customer_name: customerName
+credit_limit: creditLimit
+orders: orders
+order_id: orderNumber
+order_customer: customerNumber
+order_lines: orderdetails
+line_order: orderNumber
+qty: quantityOrdered
+price: priceEach
+payments: payments
+pay_customer: customerNumber
+pay_amount: amount

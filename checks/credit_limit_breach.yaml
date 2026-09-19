@@ -1,0 +1,24 @@
+id: credit_limit_breach
+name_ar: "تجاوز سقف الائتمان"
+category: مخاطر ائتمانية
+severity: عالية
+requires:
+  entities: [customers, orders, order_lines, payments]
+eligibility:
+  min_rows: 10
+sql: |
+  SELECT c.{customer_id}, c.{customer_name}, c.{credit_limit},
+         ROUND(COALESCE(o.ordered,0) - COALESCE(p.paid,0), 2) AS balance
+  FROM {customers} c
+  LEFT JOIN (SELECT {order_customer} cn, SUM(l.{qty}*l.{price}) ordered
+             FROM {orders} o JOIN {order_lines} l ON l.{line_order}=o.{order_id}
+             GROUP BY {order_customer}) o ON o.cn = c.{customer_id}
+  LEFT JOIN (SELECT {pay_customer} cn, SUM({pay_amount}) paid
+             FROM {payments} GROUP BY {pay_customer}) p ON p.cn = c.{customer_id}
+  WHERE COALESCE(o.ordered,0) - COALESCE(p.paid,0) > c.{credit_limit}
+  ORDER BY balance DESC
+finding_template: "العميل {customer_name} تجاوز سقفه البالغ {credit_limit} برصيد {balance}"
+materiality_column: balance
+materiality_threshold: 1000
+verified: true
+created_by: human

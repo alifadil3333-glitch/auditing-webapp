@@ -1,0 +1,16 @@
+id: sequence_gaps
+name_ar: "فجوات في تسلسل أرقام المستندات"
+category: ضوابط
+severity: متوسطة
+applies_to:
+  column_role: identifier
+  dtype_contains: int
+sql: |
+  SELECT * FROM (
+    SELECT MIN({col}) AS min_no, MAX({col}) AS max_no, COUNT(*) AS actual,
+           (MAX({col}) - MIN({col}) + 1) - COUNT(*) AS missing
+    FROM {table}
+  ) s
+  WHERE missing > 0
+finding_template: "الجدول {table}: {missing} رقم مفقود في تسلسل {col}"
+verified: true
