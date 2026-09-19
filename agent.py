@@ -1,6 +1,4 @@
 import json
-import re
-from datetime import datetime
 import os
 
 from anthropic import Anthropic
@@ -8,6 +6,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+
+MAX_STEPS = 12
+ROWS_TO_MODEL = 25
 
 
 def _client():
@@ -79,19 +80,79 @@ def summarize_findings(results):
     return "".join(b.text for b in resp.content if b.type == "text")
 
 
-# ---------- أسئلة بلغة طبيعية ----------
+# ---------- وكيل التحقيق ----------
 
-BASE = os.path.dirname(os.path.abspath(__file__))
+TOOLS = [
+    {
+        "name": "run_sql",
+        "description": "ينفّذ استعلام SELECT واحداً على القاعدة ويعيد الأعمدة وأول صفوف النتيجة. للاستكشاف والتحقق فقط.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string", "description": "استعلام SELECT واحد، بلا فاصلة منقوطة"},
+                "purpose": {"type": "string", "description": "جملة عربية قصيرة: ماذا تفحص بهذا الاستعلام"},
+            },
+            "required": ["sql", "purpose"],
+        },
+    },
+    {
+        "name": "finish",
+        "description": "يُستدعى مرة واحدة في النهاية لتسليم الداشبورد. كل مؤشر وملاحظة يجب أن يحمل استعلاماً يعيد بياناتها من القاعدة.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "summary": {"type": "string", "description": "خلاصة تنفيذية بالعربية (5-8 أسطر)"},
+                "overall_risk": {"type": "string", "enum": ["منخفض", "متوسط", "مرتفع", "حرج"]},
+                "kpis": {
+                    "type": "array",
+                    "description": "حتى 6 مؤشرات؛ الاستعلام يعيد قيمة واحدة في أول خلية",
+                    "items": {"type": "object", "properties": {
+                        "label": {"type": "string"}, "sql": {"type": "string"}},
+                        "required": ["label", "sql"]},
+                },
+                "findings": {
+                    "type": "array",
+                    "description": "الملاحظات المريبة مرتبة بالأهمية (حتى 10)",
+                    "items": {"type": "object", "properties": {
+                        "title": {"type": "string"},
+                        "severity": {"type": "string", "enum": ["حرجة", "عالية", "متوسطة", "منخفضة"]},
+                        "description": {"type": "string", "description": "ماذا وُجد"},
+                        "why_suspicious": {"type": "string"},
+                        "recommendation": {"type": "string", "description": "ماذا يفحص المدقق بعد ذلك"},
+                        "sql": {"type": "string",
+                                "description": "الاستعلام الذي يعيد الصفوف المريبة نفسها (حتى 100 صف)"},
+                        "chart": {"type": "object", "properties": {
+                            "type": {"type": "string", "enum": ["bar", "line", "pie", "table"]},
+                            "x": {"type": "string"}, "y": {"type": "string"}},
+                            "description": "x وy أسماء أعمدة موجودة في نتيجة sql؛ y رقمي"},
+                    }, "required": ["title", "severity", "description", "sql"]},
+                },
+            },
+            "required": ["title", "summary", "overall_risk", "findings"],
+        },
+    },
+]
 
+SYSTEM = """أنت مدقق داخلي ومحلل احتيال خبير. مهمتك التحقيق في قاعدة بيانات بناءً على طلب المدقق.
 
-def _json_from(text):
-    text = text.replace("```json", "").replace("```", "").strip()
-    m = re.search(r"\{.*\}", text, re.S)
-    return json.loads(m.group(0) if m else text)
+المنهج:
+1. ابدأ بالبنية المعطاة، وحدّد ما يمكن فحصه فعلاً. لا تخمّن أسماء جداول أو أعمدة.
+2. نفّذ استعلامات run_sql متتالية للاستكشاف والتحقق. ابدأ عاماً ثم تعمّق حيث تجد شذوذاً.
+3. مؤشرات ابحث عنها عندما تنطبق على البيانات: مبالغ شاذة أو مستديرة بشكل مريب، تكرار غير معتاد (نفس المبلغ أو العميل أو التاريخ)،
+   فجوات في تسلسل المستندات، تجاوز سقف الائتمان أو رصيد غير متوازن، عمليات في عطل أو أوقات غير معتادة، تواريخ غير منطقية
+   (شحن قبل الطلب، دفع قبل الفاتورة)، تركّز غير معتاد على عميل أو موظف أو مورد، قيم سالبة أو صفرية، مخالفة أنماط الحالة، أيتام العلاقات.
+4. تحقق من كل شبهة باستعلام قبل أن تعدّها ملاحظة، وميّز بين «مؤشر مريب» و«خطأ بيانات محتمل».
+5. لا تعرض ملاحظة تافهة؛ وإن لم تجد شيئاً مريباً في مجال ما فقل ذلك صراحة في الخلاصة، ولا تختلق.
+6. في النهاية استدعِ finish مرة واحدة. كل مؤشر وكل ملاحظة تحمل استعلامها الخاص الذي يعيد بياناتها من القاعدة؛ الأرقام
+   تُسحب من القاعدة عند العرض، فلا تكتب أرقاماً في النص إلا ما رأيته فعلاً في نتائج استعلاماتك.
+
+قيود الاستعلامات: SELECT واحد فقط بلا تعليقات ولا فاصلة منقوطة، بلهجة قاعدة البيانات المذكورة، والنتائج للنموذج مقتطعة
+لأول {rows} صفاً وبعض الأعمدة الشخصية محجوبة. النتيجة مؤشرات توجّه الفحص وليست دليل تدقيق."""
 
 
 def schema_for_sql(catalog, max_cols=40):
-    """بنية القاعدة لكتابة الاستعلامات: أعمدة وأنواع ومفاتيح وعلاقات وأمثلة مقنّعة. لا بيانات حقيقية."""
+    """بنية القاعدة: أعمدة وأنواع ومفاتيح وعلاقات وأمثلة مقنّعة. لا بيانات حقيقية."""
     out = {}
     for t, m in catalog["tables"].items():
         prof = {c["name"]: c for c in m.get("profile", {}).get("columns", [])}
@@ -108,75 +169,185 @@ def schema_for_sql(catalog, max_cols=40):
     return out
 
 
-def generate_sql(question, catalog, dialect, bad_sql=None, error=None):
-    fix = ""
-    if bad_sql:
-        fix = f"\nمحاولتك السابقة فشلت.\nالاستعلام: {bad_sql}\nالخطأ: {error}\nصحّحه.\n"
-    prompt = f"""أنت مدقق بيانات خبير تكتب استعلامات SQL للقراءة فقط.
-لهجة قاعدة البيانات: {dialect}
+# ---------- معرفة القاعدة: تُبنى مرة وتُخزَّن ----------
 
-بنية القاعدة:
-{json.dumps(schema_for_sql(catalog), ensure_ascii=False)}
+TABLES_PER_CALL = 8
+KNOWLEDGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "knowledge.json")
 
-سؤال المستخدم: {question}
-{fix}
-القواعد:
-- استعلام SELECT واحد فقط (أو WITH ... SELECT)، بلا أي تعليقات، وبلا فاصلة منقوطة.
-- استخدم فقط الجداول والأعمدة الموجودة أعلاه. لا تخمّن أسماء.
-- ضع LIMIT لا يتجاوز 100 ما لم يكن الاستعلام تجميعياً يرجع صفوفاً قليلة.
-- للاحتيال أو الشذوذ: استخدم مؤشرات يمكن حسابها من البيانات (تكرار غير معتاد، مبالغ شاذة، فجوات تسلسل، تجاوز سقف، تواريخ غير منطقية، تطابق مبالغ) واذكر المنطق في explanation.
-- أجب بـ JSON فقط: {{"sql": "...", "explanation": "شرح قصير بالعربية لمنطق الاستعلام"}}
-- إذا لا يمكن الإجابة من هذه البيانات: {{"sql": null, "explanation": "السبب"}}"""
-    resp = _client().messages.create(model=MODEL, max_tokens=1500,
+
+def _digest(catalog, tables):
+    """ملخص مضغوط لكل جدول من أول 500 صف: أنواع، إحصاءات، قيم متكررة، وصفوف عينة مقنّعة."""
+    out = {}
+    for t in tables:
+        m = catalog["tables"][t]
+        p = m.get("profile", {})
+        types = {c["name"]: c["type"] for c in m["columns"]}
+        cols = []
+        for c in p.get("columns", []):
+            d = {"n": c["name"], "type": types.get(c["name"]), "role": c["role"],
+                 "null%": c["null_pct"], "distinct": c["distinct"]}
+            for k in ("min", "max", "top_values"):
+                if c.get(k) is not None:
+                    d[k] = c[k]
+            if "top_values" not in c:
+                d["ex"] = c.get("samples", [])[:2]
+            cols.append(d)
+        out[t] = {"rows": p.get("row_count"), "sampled": p.get("sampled"), "pk": m.get("pk"),
+                  "fks": [f"{f['column']} -> {f['ref_table']}.{f['ref_column']}" for f in m.get("fks", [])],
+                  "columns": cols, "sample_rows": p.get("sample_rows")}
+    return out
+
+
+def _learn_batch(catalog, tables):
+    prompt = f"""أنت مدقق بيانات خبير تتعرّف على قاعدة بيانات جديدة لأول مرة.
+لكل جدول أدناه ملخص مأخوذ من أول {catalog_sample_size(catalog)} صف فقط (وقد لا يمثّل كامل البيانات)، وبعض الأعمدة الشخصية محجوبة:
+
+{json.dumps(_digest(catalog, tables), ensure_ascii=False, default=str)}
+
+اكتب «ذاكرة» مختصرة ودقيقة تُخزَّن وتُستخدم لاحقاً بدل إعادة قراءة الجداول. أجب بـ JSON فقط:
+{{"database_summary": "ما هذه القاعدة (نوع النشاط) في 2-3 جمل",
+  "relationships": ["orders.customerNumber -> customers.customerNumber (عميل واحد له طلبات كثيرة)"],
+  "tables": {{"اسم_الجدول": {{
+      "purpose": "ماذا يمثل الجدول وما وحدة الصف فيه",
+      "columns": {{"اسم_عمود": "معناه أو ترميزه أو وحدته"}},
+      "audit_risks": ["ما الذي يستحق فحص المدقق في هذا الجدول"],
+      "quirks": ["ملاحظات جودة بيانات: قيم غريبة، أعمدة شبه فارغة، ترميز حالات..."]}}}}}}
+- في columns اذكر فقط الأعمدة غير البديهية أو ذات الترميز/المعنى الخاص، لا كل الأعمدة.
+- لا تخترع معلومات غير ظاهرة في الملخص؛ اذكر عدم اليقين صراحة."""
+    resp = _client().messages.create(model=MODEL, max_tokens=6000,
                                      messages=[{"role": "user", "content": prompt}])
-    return _json_from("".join(b.text for b in resp.content if b.type == "text"))
+    text = "".join(b.text for b in resp.content if b.type == "text")
+    text = text.replace("```json", "").replace("```", "").strip()
+    return json.loads(text)
 
 
-def explain_results(question, sql, df):
-    """شرح النتائج بالعربية. يُرسل أعلى 20 صفاً فقط، وتُقنَّع الأعمدة الشخصية."""
+def catalog_sample_size(catalog):
+    sizes = [m.get("profile", {}).get("sampled", 0) for m in catalog["tables"].values()]
+    return max(sizes) if sizes else 0
+
+
+def load_knowledge(fingerprint):
+    """يرجع المعرفة المخزنة إن كانت لنفس هيكل القاعدة، وإلا None."""
+    try:
+        with open(KNOWLEDGE_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data["knowledge"] if data.get("fingerprint") == fingerprint else None
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def learn_database(catalog, force=False, on_progress=None):
+    """يقرأ الوكيل ملخص أول 500 صف من كل جدول مرة واحدة ويخزّن فهمه.
+    يعيد (knowledge, from_cache). بلا استدعاء API إن كانت المعرفة المخزنة تطابق بصمة الهيكل الحالية."""
+    fp = catalog["fingerprint"]
+    if not force:
+        cached = load_knowledge(fp)
+        if cached:
+            return cached, True
+
+    names = list(catalog["tables"])
+    knowledge = {"database_summary": "", "relationships": [], "tables": {}}
+    summaries = []
+    for i in range(0, len(names), TABLES_PER_CALL):
+        batch = names[i:i + TABLES_PER_CALL]
+        if on_progress:
+            on_progress(i // TABLES_PER_CALL + 1, batch)
+        part = _learn_batch(catalog, batch)
+        summaries.append(part.get("database_summary", ""))
+        knowledge["relationships"] += part.get("relationships", [])
+        knowledge["tables"].update(part.get("tables", {}))
+    knowledge["database_summary"] = " ".join(s for s in summaries if s)
+
+    os.makedirs(os.path.dirname(KNOWLEDGE_PATH), exist_ok=True)
+    with open(KNOWLEDGE_PATH, "w", encoding="utf-8") as f:
+        json.dump({"fingerprint": fp, "knowledge": knowledge}, f, ensure_ascii=False, indent=2)
+    return knowledge, False
+
+
+def knowledge_text(catalog, knowledge):
+    """نص مضغوط للمعرفة المخزنة + أسماء الأعمدة وأنواعها الدقيقة، يُرسل للنموذج بدل بنية القاعدة الخام."""
+    lines = [f"ملخص القاعدة: {knowledge.get('database_summary', '')}"]
+    if knowledge.get("relationships"):
+        lines.append("العلاقات: " + " | ".join(knowledge["relationships"]))
+    lines.append("الجداول:")
+    for t, m in catalog["tables"].items():
+        k = knowledge.get("tables", {}).get(t, {})
+        rows = m.get("profile", {}).get("row_count")
+        lines.append(f"- {t} ({rows} صف): {k.get('purpose', '')}")
+        meanings = k.get("columns", {})
+        for c in m["columns"]:
+            lines.append(f"    {c['name']} {c['type']}" + (f" — {meanings[c['name']]}" if c["name"] in meanings else ""))
+        if k.get("audit_risks"):
+            lines.append("    مخاطر مقترحة: " + "؛ ".join(k["audit_risks"]))
+        if k.get("quirks"):
+            lines.append("    ملاحظات بيانات: " + "؛ ".join(k["quirks"]))
+    return "\n".join(lines)
+
+
+def _rows_for_model(df):
+    """أول صفوف النتيجة للنموذج مع حجب الأعمدة الشخصية وتقصير الخلايا الطويلة."""
     from catalog import looks_like_pii
-    sample = df.head(20).copy()
-    for c in sample.columns:
+    d = df.head(ROWS_TO_MODEL).copy()
+    for c in d.columns:
         if looks_like_pii(str(c)):
-            sample[c] = "<محجوب>"
-    resp = _client().messages.create(
-        model=MODEL, max_tokens=1000,
-        messages=[{"role": "user", "content":
-            f"سؤال المدقق: {question}\nالاستعلام المنفّذ: {sql}\n"
-            f"عدد صفوف النتيجة: {len(df)} (العينة أدناه أول {len(sample)} صفاً، بعض الأعمدة محجوبة)\n"
-            f"{json.dumps(sample.to_dict('records'), ensure_ascii=False, default=str)}\n\n"
-            "اشرح النتيجة بالعربية في بضعة أسطر لمدقق: ماذا تعني، وما أبرز ما يستحق المتابعة. "
-            "لا تخترع أرقاماً غير موجودة، وقل صراحة إن كانت العينة لا تكفي للاستنتاج. "
-            "تذكير: هذا مؤشر يوجّه الفحص وليس دليل تدقيق."}],
-    )
-    return "".join(b.text for b in resp.content if b.type == "text")
+            d[c] = "<محجوب>"
+    d = d.map(lambda v: v[:80] if isinstance(v, str) else v)
+    return {"columns": [str(c) for c in d.columns], "row_count": len(df), "rows": d.to_dict("records")}
 
 
-def _log(entry):
-    os.makedirs(os.path.join(BASE, "data"), exist_ok=True)
-    entry["time"] = datetime.now().isoformat(timespec="seconds")
-    with open(os.path.join(BASE, "data", "ask_log.jsonl"), "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+def _json_result(obj):
+    return json.dumps(obj, ensure_ascii=False, default=str)
 
 
-def ask(question, catalog, engine, explain=True):
-    """سؤال بلغة طبيعية -> استعلام -> تنفيذ (عبر الحارس) -> شرح. يعيد dict بكل الخطوات."""
+def investigate(question, catalog, engine, context="", on_step=None, knowledge=None):
+    """وكيل تحقيق: يستكشف بعدة استعلامات ثم يسلّم مواصفات داشبورد.
+    يعيد {"spec": dict|None, "text": str|None, "steps": [...]}. كل الاستعلامات تمر على حارس run_query.
+    إن وُجدت `knowledge` (من learn_database) تُستخدم بدل بنية القاعدة الخام لتوفير التوكنز."""
     from db import run_query
-    dialect = engine.dialect.name
-    sql = explanation = error = None
-    df = None
-    for _ in range(2):  # محاولة + تصحيح واحد
-        gen = generate_sql(question, catalog, dialect, bad_sql=sql if error else None, error=error)
-        sql, explanation = gen.get("sql"), gen.get("explanation")
-        if not sql:
-            _log({"question": question, "sql": None, "note": explanation})
-            return {"sql": None, "logic": explanation, "df": None, "error": None, "answer": None}
-        try:
-            df = run_query(sql, engine)
-            error = None
-            break
-        except Exception as e:
-            error = str(e)[:300]
-    answer = explain_results(question, sql, df) if (df is not None and explain and len(df)) else None
-    _log({"question": question, "sql": sql, "rows": None if df is None else len(df), "error": error})
-    return {"sql": sql, "logic": explanation, "df": df, "error": error, "answer": answer}
+    client = _client()
+    system = [{"type": "text", "text": SYSTEM.format(rows=ROWS_TO_MODEL),
+               "cache_control": {"type": "ephemeral"}}]
+    if knowledge:
+        db_info = f"ذاكرة القاعدة (مبنية مسبقاً من قراءة أول صفوف كل جدول):\n{knowledge_text(catalog, knowledge)}"
+    else:
+        db_info = f"بنية القاعدة:\n{json.dumps(schema_for_sql(catalog), ensure_ascii=False)}"
+    intro = f"لهجة القاعدة: {engine.dialect.name}\n\n{db_info}\n\n"
+    if context:
+        intro += f"سياق تحقيقات سابقة في هذه الجلسة:\n{context}\n\n"
+    # مقدمة القاعدة تُخزَّن مؤقتاً عند المزوّد: خطوات التحقيق اللاحقة لا تدفع ثمنها كاملاً
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": intro, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": f"طلب المدقق: {question}"}]}]
+    steps = []
+
+    def call(force_finish=False):
+        kw = dict(model=MODEL, max_tokens=6000, system=system, tools=TOOLS, messages=messages)
+        if force_finish:
+            kw["tool_choice"] = {"type": "tool", "name": "finish"}
+        return client.messages.create(**kw)
+
+    for step in range(MAX_STEPS + 1):
+        resp = call(force_finish=(step == MAX_STEPS))
+        messages.append({"role": "assistant", "content": resp.content})
+        uses = [b for b in resp.content if b.type == "tool_use"]
+        if not uses:
+            text = "".join(b.text for b in resp.content if b.type == "text")
+            return {"spec": None, "text": text, "steps": steps}
+
+        results = []
+        for u in uses:
+            if u.name == "finish":
+                return {"spec": u.input, "text": None, "steps": steps}
+            sql, purpose = u.input.get("sql", ""), u.input.get("purpose", "")
+            if on_step:
+                on_step(len(steps) + 1, purpose)
+            try:
+                payload = _rows_for_model(run_query(sql, engine))
+                steps.append({"purpose": purpose, "sql": sql, "rows": payload["row_count"], "error": None})
+            except Exception as e:
+                payload = {"error": str(e)[:300]}
+                steps.append({"purpose": purpose, "sql": sql, "rows": None, "error": payload["error"]})
+            results.append({"type": "tool_result", "tool_use_id": u.id, "content": _json_result(payload)})
+        messages.append({"role": "user", "content": results})
+
+    return {"spec": None, "text": "لم ينتهِ التحقيق ضمن عدد الخطوات المسموح.", "steps": steps}

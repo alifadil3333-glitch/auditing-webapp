@@ -43,8 +43,11 @@ def discover(engine, schema=None):
     return tables
 
 
-def profile_table(engine, table, cols, sample=5000, schema=None):
-    """الخطوة ٢: توصيف عينة من الجدول."""
+SAMPLE_ROWS = 500  # عدد الصفوف الأولى التي يقرأها الاكتشاف من كل جدول
+
+
+def profile_table(engine, table, cols, sample=SAMPLE_ROWS, schema=None):
+    """الخطوة ٢: توصيف أول `sample` صفاً من الجدول (لا كله). عدد الصفوف الكلي دقيق."""
     full = qualified(engine, table, schema)
     total = run_query(f"SELECT COUNT(*) AS n FROM {full}", engine).n[0]
     df = run_query(f"SELECT * FROM {full} LIMIT {sample}", engine, limit=sample)
@@ -73,8 +76,20 @@ def profile_table(engine, table, cols, sample=5000, schema=None):
             samples = non_null.unique()[:3].tolist()
             info["samples"] = mask(samples) if info["is_pii"] else [str(v) for v in samples]
 
+        if 0 < distinct <= 20:
+            counts = non_null.astype(str).value_counts().head(8)
+            info["top_values"] = (
+                {"<محجوب>": int(counts.sum())} if info["is_pii"]
+                else {k: int(v) for k, v in counts.items()}
+            )
+
         info["role"] = infer_role(info, s)
         out["columns"].append(info)
+
+    head = df.head(3).copy()
+    for c in head.columns:
+        head[c] = mask(head[c].tolist()) if looks_like_pii(str(c)) else head[c].map(lambda v: str(v)[:60])
+    out["sample_rows"] = head.to_dict("records")
 
     return out
 
@@ -98,7 +113,7 @@ def infer_role(info, series):
     return "attribute"
 
 
-def build_catalog(db_url=None, sample=5000, schema=None):
+def build_catalog(db_url=None, sample=SAMPLE_ROWS, schema=None):
     schema = schema or os.getenv("DB_SCHEMA") or None
     engine = get_engine(db_url)
     tables = discover(engine, schema)
