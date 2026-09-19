@@ -157,10 +157,11 @@ os.environ["DB_URL"] = URL.replace("sqlite:///", "sqlite:///" + os.path.dirname(
 os.environ["ANTHROPIC_API_KEY"] = "dummy"
 from streamlit.testing.v1 import AppTest
 
-agent.investigate = lambda q, cat, eng, ctx="", on_step=None, knowledge=None: (
+LANGS_SEEN = []
+agent.investigate = lambda q, cat, eng, ctx="", on_step=None, knowledge=None, lang="ar": (LANGS_SEEN.append(lang),
     on_step and on_step(1, "خطوة"), {"spec": SPEC, "text": None,
-                                     "steps": [{"purpose": "خطوة", "sql": "SELECT 1", "rows": 1, "error": None}]})[1]
-agent.learn_database = lambda cat, force=False, on_progress=None: (
+                                     "steps": [{"purpose": "خطوة", "sql": "SELECT 1", "rows": 1, "error": None}]})[-1]
+agent.learn_database = lambda cat, force=False, on_progress=None, lang="ar": (
     on_progress and on_progress(1, ["customers"]), (k, False))[1]
 report.save_investigation = lambda *a, **k: None
 at = AppTest.from_file("app.py", default_timeout=30).run()
@@ -172,4 +173,39 @@ assert not at.exception, at.exception
 texts = " ".join(m.value for m in at.markdown) + " ".join(s.value for s in at.subheader)
 assert "تحقيق تجريبي" in texts, texts[:500]
 print("5 UI OK; metrics:", [(m.label, m.value) for m in at.metric])
+
+# 6) اللغتان: الأكواد، التقرير، وتبديل لغة الواجهة
+import i18n
+
+assert i18n.sev_code("عالية") == "high" and i18n.sev_code("High") == "high" and i18n.sev_code("مرتفع") == "high"
+assert i18n.sev_code("حرجة") == "critical" and i18n.sev_code("منخفض") == "low" and i18n.sev_code("???") == "medium"
+assert i18n.status_code("ملاحظات") == "flagged" and i18n.status_label("skipped", "en") == "Skipped"
+assert i18n.reason_text({"k": "min_rows", "a": {"rows": 3, "min": 10}}, "en") == "Row count 3 is below the minimum 10"
+assert "أقل من الحد" in i18n.reason_text({"k": "min_rows", "a": {"rows": 3, "min": 10}}, "ar")
+assert i18n.reason_text("raw error", "en") == "raw error"
+
+inv_en = report.materialize(SPEC, engine, "en")
+assert [f["severity"] for f in inv_en["findings"]] == ["critical", "high", "low"] and inv_en["overall_risk"] == "medium"
+html_en = report.to_html_report(inv_en, "q", "en")
+html_ar = report.to_html_report(inv_en, "q", "ar")
+assert "dir='ltr'" in html_en and "Overall risk level" in html_en and ">High<" in html_en and "Query" in html_en
+assert "dir='rtl'" in html_ar and "مستوى الخطورة العام" in html_ar and ">عالية<" in html_ar
+print("6a codes + bilingual report OK")
+
+at = AppTest.from_file("app.py", default_timeout=30).run()
+assert at.title[0].value == "لوحة التدقيق الآلي", at.title[0].value
+at.sidebar.radio[0].set_value("en").run()
+assert not at.exception, at.exception
+assert at.title[0].value == "Automated Audit Dashboard", at.title[0].value
+at.sidebar.button[0].click().run()
+at.chat_input[0].set_value("check everything").run()
+assert not at.exception, at.exception
+assert LANGS_SEEN[-1] == "en", LANGS_SEEN            # اللغة وصلت للوكيل
+page = " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
+assert "Question: check everything" in page and "Overall risk level:" in page and ":orange[High]" in page, page[:600]
+labels = [m.label for m in at.metric]
+assert "Customers count" not in labels
+at.sidebar.radio[0].set_value("ar").run()
+assert at.title[0].value == "لوحة التدقيق الآلي" and not at.exception
+print("6b UI language switch ar<->en OK; agent lang passed:", LANGS_SEEN)
 sys.exit(0)

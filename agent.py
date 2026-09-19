@@ -58,23 +58,23 @@ customers, orders, order_lines, payments, products, suppliers, invoices, employe
     return json.loads(text)
 
 
-def summarize_findings(results):
-    """ملخص تنفيذي بالعربية — يُرسل أعلى ٢٠ صفاً فقط لا البيانات كاملة."""
+def summarize_findings(results, lang="ar"):
+    """ملخص تنفيذي — يُرسل أعلى ٢٠ صفاً فقط لا البيانات كاملة."""
     brief = []
     for r in results:
-        if r["status"] == "ملاحظات":
+        if r["status"] == "flagged":
             sample = r["data"].head(20).to_dict("records") if r["data"] is not None else []
-            brief.append({"الفحص": r["name"], "الخطورة": r["severity"],
-                          "العدد": r["hits"], "عينة": sample})
+            brief.append({"check": r[f"name_{lang}"], "severity": r["severity"],
+                          "count": r["hits"], "sample": sample})
 
     if not brief:
-        return "لا توجد ملاحظات."
+        return "لا توجد ملاحظات." if lang == "ar" else "No findings."
 
     resp = _client().messages.create(
         model=MODEL,
         max_tokens=1500,
         messages=[{"role": "user", "content":
-            f"اكتب ملخصاً تنفيذياً بالعربية لمدير مالي، مرتباً حسب الأهمية، "
+            f"اكتب ملخصاً تنفيذياً لمدير مالي باللغة: {LANG_NAME.get(lang, lang)}، مرتباً حسب الأهمية، "
             f"لا يتجاوز ٢٠٠ كلمة:\n{json.dumps(brief, ensure_ascii=False, default=str)}"}],
     )
     return "".join(b.text for b in resp.content if b.type == "text")
@@ -103,7 +103,7 @@ TOOLS = [
             "properties": {
                 "title": {"type": "string"},
                 "summary": {"type": "string", "description": "خلاصة تنفيذية بالعربية (5-8 أسطر)"},
-                "overall_risk": {"type": "string", "enum": ["منخفض", "متوسط", "مرتفع", "حرج"]},
+                "overall_risk": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                 "kpis": {
                     "type": "array",
                     "description": "حتى 6 مؤشرات؛ الاستعلام يعيد قيمة واحدة في أول خلية",
@@ -116,7 +116,7 @@ TOOLS = [
                     "description": "الملاحظات المريبة مرتبة بالأهمية (حتى 10)",
                     "items": {"type": "object", "properties": {
                         "title": {"type": "string"},
-                        "severity": {"type": "string", "enum": ["حرجة", "عالية", "متوسطة", "منخفضة"]},
+                        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                         "description": {"type": "string", "description": "ماذا وُجد"},
                         "why_suspicious": {"type": "string"},
                         "recommendation": {"type": "string", "description": "ماذا يفحص المدقق بعد ذلك"},
@@ -148,7 +148,12 @@ SYSTEM = """أنت مدقق داخلي ومحلل احتيال خبير. مهم�
    تُسحب من القاعدة عند العرض، فلا تكتب أرقاماً في النص إلا ما رأيته فعلاً في نتائج استعلاماتك.
 
 قيود الاستعلامات: SELECT واحد فقط بلا تعليقات ولا فاصلة منقوطة، بلهجة قاعدة البيانات المذكورة، والنتائج للنموذج مقتطعة
-لأول {rows} صفاً وبعض الأعمدة الشخصية محجوبة. النتيجة مؤشرات توجّه الفحص وليست دليل تدقيق."""
+لأول {rows} صفاً وبعض الأعمدة الشخصية محجوبة. النتيجة مؤشرات توجّه الفحص وليست دليل تدقيق.
+
+اللغة: اكتب كل النصوص الموجّهة للمستخدم (العنوان والخلاصة والوصف والتوصية...) باللغة: {lang}.
+أما الاستعلامات وأسماء الجداول والأعمدة وقيم severity وoverall_risk فتبقى كما هي (بالإنجليزية)."""
+
+LANG_NAME = {"ar": "العربية (Arabic)", "en": "English"}
 
 
 def schema_for_sql(catalog, max_cols=40):
@@ -198,8 +203,9 @@ def _digest(catalog, tables):
     return out
 
 
-def _learn_batch(catalog, tables):
+def _learn_batch(catalog, tables, lang="ar"):
     prompt = f"""أنت مدقق بيانات خبير تتعرّف على قاعدة بيانات جديدة لأول مرة.
+اكتب كل القيم النصية في الإجابة (الوصف والمعاني والمخاطر والملاحظات) باللغة: {LANG_NAME.get(lang, lang)}.
 لكل جدول أدناه ملخص مأخوذ من أول {catalog_sample_size(catalog)} صف فقط (وقد لا يمثّل كامل البيانات)، وبعض الأعمدة الشخصية محجوبة:
 
 {json.dumps(_digest(catalog, tables), ensure_ascii=False, default=str)}
@@ -236,7 +242,7 @@ def load_knowledge(fingerprint):
         return None
 
 
-def learn_database(catalog, force=False, on_progress=None):
+def learn_database(catalog, force=False, on_progress=None, lang="ar"):
     """يقرأ الوكيل ملخص أول 500 صف من كل جدول مرة واحدة ويخزّن فهمه.
     يعيد (knowledge, from_cache). بلا استدعاء API إن كانت المعرفة المخزنة تطابق بصمة الهيكل الحالية."""
     fp = catalog["fingerprint"]
@@ -252,11 +258,12 @@ def learn_database(catalog, force=False, on_progress=None):
         batch = names[i:i + TABLES_PER_CALL]
         if on_progress:
             on_progress(i // TABLES_PER_CALL + 1, batch)
-        part = _learn_batch(catalog, batch)
+        part = _learn_batch(catalog, batch, lang)
         summaries.append(part.get("database_summary", ""))
         knowledge["relationships"] += part.get("relationships", [])
         knowledge["tables"].update(part.get("tables", {}))
     knowledge["database_summary"] = " ".join(s for s in summaries if s)
+    knowledge["lang"] = lang  # لغة كتابة المعرفة؛ تُخزَّن لتنبيه المستخدم إن غيّر اللغة لاحقاً
 
     os.makedirs(os.path.dirname(KNOWLEDGE_PATH), exist_ok=True)
     with open(KNOWLEDGE_PATH, "w", encoding="utf-8") as f:
@@ -299,13 +306,13 @@ def _json_result(obj):
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
-def investigate(question, catalog, engine, context="", on_step=None, knowledge=None):
+def investigate(question, catalog, engine, context="", on_step=None, knowledge=None, lang="ar"):
     """وكيل تحقيق: يستكشف بعدة استعلامات ثم يسلّم مواصفات داشبورد.
     يعيد {"spec": dict|None, "text": str|None, "steps": [...]}. كل الاستعلامات تمر على حارس run_query.
     إن وُجدت `knowledge` (من learn_database) تُستخدم بدل بنية القاعدة الخام لتوفير التوكنز."""
     from db import run_query
     client = _client()
-    system = [{"type": "text", "text": SYSTEM.format(rows=ROWS_TO_MODEL),
+    system = [{"type": "text", "text": SYSTEM.format(rows=ROWS_TO_MODEL, lang=LANG_NAME.get(lang, lang)),
                "cache_control": {"type": "ephemeral"}}]
     if knowledge:
         db_info = f"ذاكرة القاعدة (مبنية مسبقاً من قراءة أول صفوف كل جدول):\n{knowledge_text(catalog, knowledge)}"

@@ -1,5 +1,6 @@
 id: credit_limit_breach
 name_ar: "تجاوز سقف الائتمان"
+name_en: "Credit limit breach"
 category: مخاطر ائتمانية
 severity: عالية
 requires:

@@ -1,5 +1,6 @@
 id: sequence_gaps
 name_ar: "فجوات في تسلسل أرقام المستندات"
+name_en: "Gaps in document number sequences"
 category: ضوابط
 severity: متوسطة
 applies_to:

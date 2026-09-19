@@ -6,6 +6,7 @@ import pandas as pd
 import yaml
 
 from db import get_engine, qualified, quote, run_query
+from i18n import reason_text, sev_code
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -32,7 +33,7 @@ def is_eligible(check, catalog, mapping):
     req = check.get("requires", {}).get("entities", [])
     missing = [e for e in req if e not in mapping]
     if missing:
-        return False, f"كيانات غير معرّفة: {', '.join(missing)}"
+        return False, {"k": "missing_entities", "a": {"items": ", ".join(missing)}}
 
     elig = check.get("eligibility", {})
     if "min_rows" in elig:
@@ -40,16 +41,17 @@ def is_eligible(check, catalog, mapping):
         if table:
             rows = catalog["tables"].get(table, {}).get("profile", {}).get("row_count", 0)
             if rows < elig["min_rows"]:
-                return False, f"عدد الصفوف {rows} أقل من الحد {elig['min_rows']}"
+                return False, {"k": "min_rows", "a": {"rows": rows, "min": elig["min_rows"]}}
 
     return True, ""
 
 
 def _result(check, status, reason="", df=None):
     return {
-        "id": check["id"], "name": check["name_ar"], "status": status,
+        "id": check["id"], "name_ar": check["name_ar"], "name_en": check.get("name_en", check["name_ar"]),
+        "status": status,  # flagged | clean | skipped | error
         "reason": reason, "hits": 0 if df is None else len(df),
-        "severity": check["severity"], "data": df,
+        "severity": sev_code(check["severity"]), "data": df,
         "verified": bool(check.get("verified", False)),
     }
 
@@ -65,9 +67,9 @@ def _materiality(check, df):
 def _run_mapped(check, catalog, mapping, engine):
     ok, reason = is_eligible(check, catalog, mapping)
     if not ok:
-        return _result(check, "متخطّى", reason)
+        return _result(check, "skipped", reason)
     df = _materiality(check, run_query(resolve(check["sql"], mapping, engine), engine))
-    return _result(check, "ملاحظات" if len(df) else "نظيف", df=df)
+    return _result(check, "flagged" if len(df) else "clean", df=df)
 
 
 def _run_generic(check, catalog, engine):
@@ -95,10 +97,10 @@ def _run_generic(check, catalog, engine):
                 df.insert(1, "column", col["name"])
                 frames.append(df)
     if not scanned:
-        return _result(check, "متخطّى", "لا توجد أعمدة مطابقة")
+        return _result(check, "skipped", {"k": "no_columns"})
     if not frames:
-        return _result(check, "نظيف")
-    return _result(check, "ملاحظات", df=pd.concat(frames, ignore_index=True))
+        return _result(check, "clean")
+    return _result(check, "flagged", df=pd.concat(frames, ignore_index=True))
 
 
 def run_all(catalog, mapping, engine=None):
@@ -112,7 +114,7 @@ def run_all(catalog, mapping, engine=None):
             else:
                 results.append(_run_mapped(check, catalog, mapping, engine))
         except Exception as e:
-            results.append(_result(check, "خطأ", str(e)[:200]))
+            results.append(_result(check, "error", str(e)[:200]))
 
     save_run(results)
     return results
@@ -123,7 +125,8 @@ def save_run(results):
     os.makedirs(runs, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     summary = pd.DataFrame([
-        {k: r[k] for k in ["id", "name", "status", "hits", "severity", "reason"]}
+        {"id": r["id"], "name": r["name_en"], "status": r["status"], "hits": r["hits"],
+         "severity": r["severity"], "reason": reason_text(r["reason"], "en")}
         for r in results
     ])
     summary.to_csv(os.path.join(runs, f"{stamp}.csv"), index=False, encoding="utf-8-sig")
