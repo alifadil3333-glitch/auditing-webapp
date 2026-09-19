@@ -9,7 +9,7 @@ from sqlalchemy.engine import URL
 
 import agent
 from catalog import build_catalog, is_stale
-from db import get_engine, run_query
+from db import get_engine
 from runner import run_all
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -91,8 +91,8 @@ with st.sidebar:
 # ---------- المحتوى ----------
 st.title("لوحة التدقيق الآلي")
 
-tab1, tab_ask, tab2, tab3, tab4 = st.tabs(
-    ["الملاحظات", "اسأل الذكاء الاصطناعي", "الكتالوج", "الخريطة", "استعلام حر"])
+tab1, tab_ask, tab2, tab3 = st.tabs(
+    ["الملاحظات", "اسأل الذكاء الاصطناعي", "الكتالوج", "الخريطة"])
 
 with tab_ask:
     has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
@@ -211,34 +211,3 @@ with tab3:
         st.caption("راجع هذه الخريطة يدوياً — خطأ فيها يفسد كل الفحوصات المبنية عليها.")
     else:
         st.info("لم يُنفَّذ الربط بعد. الفحوصات العامة تعمل بدونه.")
-
-with tab4:
-    st.caption("اكتب استعلام SELECT واحد فقط. أي أمر تعديل (INSERT/UPDATE/DELETE/DROP...) يُرفض، "
-               "والنتائج محدودة بـ 5000 صف ومهلة 30 ثانية.")
-    if "catalog" in st.session_state:
-        with st.expander("الجداول والأعمدة المتاحة"):
-            for t, m in st.session_state.catalog["tables"].items():
-                st.markdown(f"**{t}**: " + "، ".join(c["name"] for c in m["columns"]))
-
-    with st.form("free_query"):
-        sql_text = st.text_area("الاستعلام", height=180, placeholder="SELECT * FROM customers LIMIT 20",
-                                help="لغة SQL بلهجة قاعدتك (MySQL / PostgreSQL / SQLite)")
-        run_clicked = st.form_submit_button("نفّذ", type="primary")
-
-    if run_clicked:
-        try:
-            with st.spinner("جاري التنفيذ..."):
-                st.session_state.free_result = run_query(sql_text, engine(db_url))
-        except PermissionError as e:
-            st.session_state.free_result = None
-            st.error(str(e))
-        except Exception as e:
-            st.session_state.free_result = None
-            st.error(f"فشل التنفيذ: {str(e)[:300]}")
-
-    fr = st.session_state.get("free_result")
-    if fr is not None:
-        st.success(f"{len(fr)} صف")
-        st.dataframe(fr, use_container_width=True)
-        st.download_button("تنزيل CSV", fr.to_csv(index=False).encode("utf-8-sig"),
-                           file_name="query_result.csv", key="free_dl")
