@@ -91,7 +91,52 @@ with st.sidebar:
 # ---------- المحتوى ----------
 st.title("لوحة التدقيق الآلي")
 
-tab1, tab2, tab3, tab4 = st.tabs(["الملاحظات", "الكتالوج", "الخريطة", "استعلام حر"])
+tab1, tab_ask, tab2, tab3, tab4 = st.tabs(
+    ["الملاحظات", "اسأل الذكاء الاصطناعي", "الكتالوج", "الخريطة", "استعلام حر"])
+
+with tab_ask:
+    has_key = bool(os.getenv("ANTHROPIC_API_KEY"))
+    if DEMO_MODE or not has_key:
+        st.warning("هذه الميزة تحتاج `ANTHROPIC_API_KEY` في ملف `.env` وتشغيل التطبيق محلياً. "
+                   "معطّلة في النسخة التجريبية العامة حتى لا يُستهلك رصيد API.")
+    else:
+        st.caption("اكتب سؤالك بالعربية، مثل: «من أكثر 10 زبائن طلباً؟» أو «هل توجد مؤشرات احتيال في الطلبات؟». "
+                   "يكتب Claude استعلام SELECT وينفّذه عبر نفس حارس الأمان، ثم يشرح النتيجة. "
+                   "راجع الاستعلام المعروض دائماً: النتيجة مؤشر وليست دليل تدقيق.")
+        with st.form("ask_form"):
+            question = st.text_area("سؤالك", height=100)
+            explain = st.checkbox("اشرح النتيجة (يُرسل لـ Claude أول 20 صفاً، والأعمدة الشخصية محجوبة)", value=True)
+            ask_clicked = st.form_submit_button("اسأل", type="primary")
+
+        if ask_clicked and question.strip():
+            try:
+                with st.spinner("Claude يكتب الاستعلام وينفّذه..."):
+                    if "catalog" not in st.session_state:
+                        st.session_state.catalog = cached_catalog(db_url)
+                    st.session_state.ask_result = agent.ask(
+                        question.strip(), st.session_state.catalog, engine(db_url), explain)
+            except Exception as e:
+                st.session_state.ask_result = None
+                st.error(f"فشل: {str(e)[:300]}")
+
+        ar = st.session_state.get("ask_result")
+        if ar:
+            if ar["sql"] is None:
+                st.info(f"لا يمكن الإجابة من هذه البيانات: {ar['logic']}")
+            else:
+                if ar["error"]:
+                    st.error(f"فشل تنفيذ الاستعلام حتى بعد التصحيح: {ar['error']}")
+                if ar["answer"]:
+                    st.subheader("الخلاصة")
+                    st.markdown(ar["answer"])
+                if ar["df"] is not None:
+                    st.success(f"{len(ar['df'])} صف")
+                    st.dataframe(ar["df"], use_container_width=True)
+                    st.download_button("تنزيل CSV", ar["df"].to_csv(index=False).encode("utf-8-sig"),
+                                       file_name="answer.csv", key="ask_dl")
+                with st.expander("الاستعلام ومنطقه (راجعه)"):
+                    st.write(ar["logic"])
+                    st.code(ar["sql"], language="sql")
 
 with tab1:
     if "results" not in st.session_state:
