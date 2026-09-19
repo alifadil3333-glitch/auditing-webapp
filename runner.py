@@ -80,6 +80,8 @@ def _run_generic(check, catalog, engine):
                 continue
             if rule.get("dtype_contains") and rule["dtype_contains"] not in col["dtype"]:
                 continue
+            if any(w in col["name"].lower() for w in rule.get("name_not_contains", [])):
+                continue
             scanned += 1
             sql = check["sql"].replace(
                 "{table}", qualified(engine, table, catalog.get("schema"))

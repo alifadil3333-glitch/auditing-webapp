@@ -5,6 +5,9 @@ severity: متوسطة
 applies_to:
   column_role: identifier
   dtype_contains: int
+  # أعمدة كمية/مالية ليست أرقام مستندات
+  name_not_contains: [quantity, stock, qty, amount, price, total, cost, count, level, age]
+# الشرط الأخير: فجوات قليلة (<=20%) تعني مستندات محذوفة؛ أكثر من ذلك معرّفات غير متسلسلة بطبيعتها
 sql: |
   SELECT * FROM (
     SELECT MIN({col}) AS min_no, MAX({col}) AS max_no, COUNT(*) AS actual,
@@ -12,5 +15,6 @@ sql: |
     FROM {table}
   ) s
   WHERE missing > 0
+    AND missing * 5 <= max_no - min_no + 1
 finding_template: "الجدول {table}: {missing} رقم مفقود في تسلسل {col}"
 verified: true
