@@ -11,11 +11,35 @@ MAX_STEPS = 12
 ROWS_TO_MODEL = 25
 
 
+def _truthy(v):
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def credentials_available():
+    """هل يوجد اعتماد صالح لاستدعاء Claude؟
+    إمّا مفتاح API/رمز في البيئة، أو تسجيل دخول اشتراك عبر `ant auth login`
+    (يُخزَّن ملف الدخول على القرص وتلتقطه مكتبة anthropic تلقائياً)."""
+    if os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN"):
+        return True
+    if _truthy(os.getenv("ANTHROPIC_USE_SUBSCRIPTION")):
+        return True  # تفعيل صريح لوضع الاشتراك من ملف .env
+    candidates = [os.path.expanduser("~/.config/anthropic")]
+    if os.getenv("APPDATA"):
+        candidates.append(os.path.join(os.getenv("APPDATA"), "anthropic"))
+    for base in candidates:
+        try:
+            if os.path.isdir(base) and os.listdir(base):
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def _client():
+    """عميل Anthropic. مع مفتاح API إن وُجد، وإلا يعتمد على دخول الاشتراك
+    (`ant auth login`) أو ANTHROPIC_AUTH_TOKEN اللذين تلتقطهما المكتبة تلقائياً."""
     key = os.getenv("ANTHROPIC_API_KEY")
-    if not key:
-        raise ValueError("لا يوجد ANTHROPIC_API_KEY في ملف .env")
-    return Anthropic(api_key=key)
+    return Anthropic(api_key=key) if key else Anthropic()
 
 
 def slim_catalog(catalog, max_cols=15):

@@ -125,10 +125,11 @@ TEXT = {
     "tab_checks": ("الفحوصات الجاهزة", "Ready-made checks"),
     "tab_catalog": ("الكتالوج", "Catalog"),
     "tab_mapping": ("الخريطة", "Mapping"),
-    "ai_disabled": ("وكيل التحقيق يحتاج `ANTHROPIC_API_KEY` و`DB_URL` في ملف `.env` وتشغيل التطبيق محلياً. "
-                    "معطّل في النسخة التجريبية العامة حتى لا يُستهلك رصيد API.",
-                    "The investigation agent needs `ANTHROPIC_API_KEY` and `DB_URL` in the `.env` file and a local run. "
-                    "It is disabled in the public demo so no API credit is spent."),
+    "ai_disabled": ("وكيل التحقيق يحتاج `DB_URL` في `.env` ومصادقة Claude: إمّا مفتاح `ANTHROPIC_API_KEY`، "
+                    "أو تسجيل دخول اشتراكك عبر الأمر `ant auth login`. ويعمل محلياً فقط؛ معطّل في النسخة العامة.",
+                    "The investigation agent needs `DB_URL` in `.env` plus Claude auth: either an "
+                    "`ANTHROPIC_API_KEY`, or sign in with your subscription via `ant auth login`. "
+                    "Local only; disabled in the public demo."),
     "discover_hint": ("١. اضغط «اكتشف قاعدة البيانات» في الشريط الجانبي ليقرأ الوكيل الجداول ومحتواها. "
                       "٢. ثم اسأله من مربع الحوار في أسفل الصفحة، أو اختر اقتراحاً.",
                       "1. Press “Discover the database” in the sidebar so the agent reads the tables and their content. "

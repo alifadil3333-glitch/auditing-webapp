@@ -45,7 +45,7 @@ with st.sidebar:
     st.header(t("settings", L))
     # بدون DB_URL في البيئة (مثل النسخة المنشورة): وضع تجريبي مقفل على قاعدة وهمية
     DEMO_MODE = not os.getenv("DB_URL")
-    AI_ENABLED = not DEMO_MODE and bool(os.getenv("ANTHROPIC_API_KEY"))
+    AI_ENABLED = not DEMO_MODE and agent.credentials_available()
     if DEMO_MODE:
         db_url = URL.create("sqlite", database=os.path.join(BASE, "demo.db")).render_as_string(
             hide_password=False)
