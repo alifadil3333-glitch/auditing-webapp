@@ -84,6 +84,9 @@ def run_query(sql, engine=None, params=None, limit=MAX_ROWS):
     with eng.connect() as conn:
         if name == "mysql":
             conn.execute(text(f"SET SESSION MAX_EXECUTION_TIME={TIMEOUT_MS}"))
+            # فرض القراءة فقط على مستوى الجلسة: أي عملية كتابة تُرفض من الخادم نفسه،
+            # حماية إضافية فوق قائمة الكلمات الممنوعة وفوق مستخدم القراءة فقط الموصى به.
+            conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
         elif name == "postgresql":
             # يجب أن تكون أول جملة في المعاملة؛ حماية إضافية فوق مستخدم القراءة فقط
             conn.execute(text("SET TRANSACTION READ ONLY"))
